@@ -26,8 +26,9 @@ namespace CalmHandsWPF
         private const uint OPEN_EXISTING = 3;
         private const int MAX_TAPS = 64;
 
-        // Same IOCTL_UPDATE_FIR_SETTINGS in driver code but bit shifted
+        // Same IOCTL_UPDATE_FIR_SETTINGS and IOCTL_ENABLED in driver code but bit shifted
         private const uint IOCTL_UPDATE_FIR_SETTINGS = (0x0000000f << 16) | (0 << 14) | (0x801 << 2) | 0;
+        private const uint IOCTL_ENABLED = (0x0000000f << 16) | (0 << 14) | (0x802 << 2) | 0;
 
 
         // Import CreateFile and DeviceIoControl from Windows
@@ -45,7 +46,12 @@ namespace CalmHandsWPF
             IntPtr lpOutBuffer, int nOutBufferSize,
             out int lpBytesReturned, IntPtr lpOverlapped);
 
-
+        [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        private static extern bool DeviceIoControlToggle(
+            SafeFileHandle hDevice, uint dwIoControlCode,
+            ref bool lpInBuffer, int nInBufferSize,
+            IntPtr lpOutBuffer, int nOutBufferSize,
+            out int lpBytesReturned, IntPtr lpOverlapped);
 
         [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct FIR_SETTINGS
@@ -60,6 +66,8 @@ namespace CalmHandsWPF
         }
 
 
+        private System.Windows.Threading.DispatcherTimer messageTimer;
+
         public MainWindow()
         {
 
@@ -69,6 +77,9 @@ namespace CalmHandsWPF
             XFreqSlider.Value = Settings.Default.SavedXFreq;
             YFreqSlider.Value = Settings.Default.SavedYFreq;
 
+
+            messageTimer = new System.Windows.Threading.DispatcherTimer();
+            messageTimer.Tick += MessageTimer_Tick;
         }
 
         // When the SaveSettings Buttion is clicked
@@ -88,22 +99,51 @@ namespace CalmHandsWPF
             int cutOffX = (int)Math.Round(XFreqSlider.Value);
             int cutOffY = (int)Math.Round(YFreqSlider.Value);
 
-            // Using CreateFilter, find the best coefficents for both filters in order cut out the frequency
+            // Using CreateFilter, find the best coefficents for both filters in order cut tremors
             int[] coeffX = CreateFilter(numTaps, cutOffX, samplingFrequency);
             int[] coeffY = CreateFilter(numTaps, cutOffY, samplingFrequency);
 
             // Send the coefficents to the driver
-            bool success = SendToDriver(numTaps, coeffX, numTaps, coeffY);
+            bool success = SendFilterSettingsToDriver(numTaps, coeffX, numTaps, coeffY);
 
+            // If sending cofficents was successful, tell user
+            if (success)
+            {
+                messageTimer.Stop();
+                StatusMessageText.Foreground = new SolidColorBrush(Colors.White);
+                StatusMessageText.Text = "Settings successfully applied";
 
-            int Error = 0;
-            if (!success) {
-                Error = Marshal.GetLastWin32Error();
+                messageTimer.Interval = TimeSpan.FromSeconds(3);
+                messageTimer.Start();
+
             }
 
-            // If there is no error, block the apply changes button do user can't misclick it
-            // If there is a errr, leave it open
-            SaveSettings.IsEnabled = success;
+            // Otherwise list error
+            else
+            {
+                messageTimer.Stop();
+
+
+                StatusMessageText.Foreground = new SolidColorBrush(Colors.Red);
+                int error = Marshal.GetLastWin32Error();
+
+                switch (error)
+                {
+                    case 5: // Win32 error 5: ERROR_ACCESS_DENIED
+                        StatusMessageText.Text = "Error 5: Access Denied. Please run as Administrator";
+                        break;
+                    case 2: // Win32 error 2: System can't find file
+                        StatusMessageText.Text = "Error 2: Driver not found. Ensure driver is installed";
+                        break;
+                    default:
+                        StatusMessageText.Text = $"Error {error}: Failed to communicate with driver";
+                        break;
+                }
+            }
+
+            // If there is no error, block the apply changes button so user can't misclick it
+            // If there is a error, leave it open
+            SaveSettings.IsEnabled = !success;
 
         }
 
@@ -115,6 +155,14 @@ namespace CalmHandsWPF
                 SaveSettings.IsEnabled = true;
             }
         }
+
+
+        private void MessageTimer_Tick(object sender, EventArgs e) {
+            messageTimer.Stop();
+            StatusMessageText.Text = string.Empty;
+        
+        }
+
 
         private int[] CreateFilter(int taps, double cutoff, double sampleRate)
         {
@@ -153,7 +201,7 @@ namespace CalmHandsWPF
 
             return scaledCoeffs;
         }
-        private bool SendToDriver(int tapsX, int[] coeffsX, int tapsY, int[] coeffsY)
+        private bool SendFilterSettingsToDriver(int tapsX, int[] coeffsX, int tapsY, int[] coeffsY)
         {
             using (SafeFileHandle driverHandle = CreateFile(
                 @"\\.\CalmHandsLink",
@@ -182,5 +230,78 @@ namespace CalmHandsWPF
                 );
             }
         }
+
+        private void FilterToggle_Checked(object sender, RoutedEventArgs e)
+        {
+            if (FilterToggle != null)
+            {
+                FilterToggle.Content = "On";
+                SendToggleStateToDriver(true);
+            }
+        }
+
+        private void FilterToggle_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (FilterToggle != null)
+            {
+                FilterToggle.Content = "Off";
+                SendToggleStateToDriver(false);
+            }
+        }
+
+        private bool SendToggleStateToDriver(bool isEnabled)
+        {
+            using (SafeFileHandle driverHandle = CreateFile(
+                @"\\.\CalmHandsLink",
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                IntPtr.Zero,
+                OPEN_EXISTING,
+                0,
+                IntPtr.Zero))
+            {
+                if (driverHandle.IsInvalid)
+                {
+                    ShowToggleError(Marshal.GetLastWin32Error());
+                    return false;
+                }
+
+                int bytesReturned = 0;
+
+                // Pass the raw boolean memory state directly to EvtControlQueueIoDeviceControl
+                bool success = DeviceIoControlToggle(
+                    driverHandle,
+                    IOCTL_ENABLED,
+                    ref isEnabled,
+                    sizeof(bool), // 1 byte (BOOLEAN)
+                    IntPtr.Zero,
+                    0,
+                    out bytesReturned,
+                    IntPtr.Zero
+                );
+
+                if (!success)
+                {
+                    ShowToggleError(Marshal.GetLastWin32Error());
+                }
+                else
+                {
+                    // Clear any lingering errors if the toggle succeeded
+                    StatusMessageText.Text = string.Empty;
+                }
+
+                return success;
+            }
+        }
+
+        private void ShowToggleError(int error)
+        {
+            StatusMessageText.Foreground = new SolidColorBrush(Colors.Red);
+            if (error == 5)
+                StatusMessageText.Text = "Toggle Failed: Access Denied. Run CalmHands as Administrator.";
+            else
+                StatusMessageText.Text = $"Toggle Failed. Driver Link Error Code: {error}";
+        }
+
     }
 }

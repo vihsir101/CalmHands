@@ -8,6 +8,16 @@
         Title="MainWindow" Height="450" Width="800">
     <Grid Background="#232323">
         <StackPanel Orientation="Vertical">
+
+
+            <TextBlock x:Name="StatusMessageText" 
+           Text="" 
+           Foreground="Red" 
+           FontSize="12" 
+           Margin="0,0,0,0" 
+           TextWrapping="Wrap"
+           HorizontalAlignment="Left"/>
+
             <TextBlock Text="{Binding ElementName=XFreqSlider, Path=Value, StringFormat='X-Axis Frequency (Hz): {0:F0}'}" 
             HorizontalAlignment="Center" 
             Margin="0,100,0,10"
@@ -53,12 +63,13 @@
              Margin="0,0,0,50"
              >Apply Changes</Button>
 
-            <ToggleButton Name="MyToggleButton" 
-              Content="ON/OFF" 
-              Width="120" 
-              Height="40"
-              Checked="MyToggleButton_Checked" 
-              Unchecked="MyToggleButton_Unchecked"/>
+            <ToggleButton x:Name="FilterToggle" 
+                  Content="On" 
+                  IsChecked="True" 
+                  Width="60" 
+                  Height="28"
+                  Checked="FilterToggle_Checked" 
+                  Unchecked="FilterToggle_Unchecked"/>
 
         </StackPanel>
     </Grid>
